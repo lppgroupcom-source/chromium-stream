@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Stream</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { display: flex; flex-direction: column; font: 13px/1.2 system-ui, -apple-system, sans-serif; background: #fff; color: #202124; }
+  #bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; background: #dee1e6; }
+  #bar button { width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; font-size: 17px; color: inherit; cursor: pointer; }
+  #bar button:hover { background: #cfd3da; }
+  #url { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 14px; border: 2px solid transparent; border-radius: 16px;
+         background: #fff; font: inherit; font-size: 14px; color: inherit; outline: none; }
+  #url:focus { border-color: #1a73e8; }
+  #view { flex: 1; min-height: 0; position: relative; outline: none; }
+  #screen { position: absolute; inset: 0; width: 100%; height: 100%; display: block; user-select: none; -webkit-user-drag: none; }
+</style>
+</head>
+<body>
+<form id="bar">
+  <button type="button" id="back" title="Back">←</button>
+  <button type="button" id="forward" title="Forward">→</button>
+  <button type="button" id="reload" title="Reload">↻</button>
+  <input id="url" autocomplete="off" spellcheck="false" placeholder="Search or type a URL">
+</form>
+<div id="view" tabindex="0"><img id="screen" alt="" draggable="false"></div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const view = $("view"), screen = $("screen"), url = $("url");
+
+  // inputs go out in order, one request at a time
+  const queue = [];
+  let sending = false;
+  async function post(msg) {
+    queue.push(msg);
+    if (sending) return;
+    sending = true;
+    while (queue.length) {
+      const batch = queue.splice(0);
+      try { await fetch("/input", { method: "POST", body: JSON.stringify(batch) }); } catch {}
+    }
+    sending = false;
+  }
+
+  const stream = new EventSource("/stream");
+  stream.addEventListener("frame", e => { screen.src = "data:image/jpeg;base64," + e.data; });
+  stream.addEventListener("url", e => { if (document.activeElement !== url) url.value = e.data; });
+
+  function fit() {
+    post({ t: "size", width: view.clientWidth, height: view.clientHeight, scale: window.devicePixelRatio || 1 });
+  }
+  let fitTimer;
+  window.addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 150); });
+  fit();
+
+  const mods = e => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+  const BUTTONS = ["left", "middle", "right"];
+  function mouse(type, e, extra) {
+    const r = view.getBoundingClientRect();
+    post({ t: "mouse", e: { type, x: Math.round(e.clientX - r.left), y: Math.round(e.clientY - r.top), modifiers: mods(e), buttons: e.buttons, ...extra } });
+  }
+  let moved = null;
+  view.addEventListener("mousemove", e => {
+    if (!moved) requestAnimationFrame(() => { mouse("mouseMoved", moved, { button: BUTTONS[[1, 4, 2].findIndex(b => moved.buttons & b)] || "none" }); moved = null; });
+    moved = e;
+  });
+  view.addEventListener("mousedown", e => { e.preventDefault(); view.focus(); mouse("mousePressed", e, { button: BUTTONS[e.button] || "left", clickCount: e.detail || 1 }); });
+  window.addEventListener("mouseup", e => { if (document.activeElement === view) mouse("mouseReleased", e, { button: BUTTONS[e.button] || "left", clickCount: e.detail || 1 }); });
+  view.addEventListener("wheel", e => { e.preventDefault(); mouse("mouseWheel", e, { deltaX: e.deltaX, deltaY: e.deltaY }); }, { passive: false });
+  view.addEventListener("contextmenu", e => e.preventDefault());
+
+  function key(type, e) {
+    const typed = e.key.length === 1 && !e.ctrlKey && !e.metaKey ? e.key : e.key === "Enter" ? "\r" : "";
+    post({ t: "key", e: { type: type === "keyDown" && !typed ? "rawKeyDown" : type, key: e.key, code: e.code, modifiers: mods(e),
+                          windowsVirtualKeyCode: e.keyCode, nativeVirtualKeyCode: e.keyCode, text: type === "keyDown" ? typed : undefined } });
+  }
+  view.addEventListener("keydown", e => { e.preventDefault(); key("keyDown", e); });
+  view.addEventListener("keyup", e => { e.preventDefault(); key("keyUp", e); });
+
+  function toUrl(text) {
+    text = text.trim();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return text;
+    if (/^[^\s]+\.[^\s]+$/.test(text)) return "https://" + text;
+    return "https://duckduckgo.com/?q=" + encodeURIComponent(text);
+  }
+  $("bar").addEventListener("submit", e => {
+    e.preventDefault();
+    if (url.value.trim()) post({ t: "go", url: toUrl(url.value) });
+    view.focus();
+  });
+  url.addEventListener("focus", () => url.select());
+  for (const id of ["back", "forward", "reload"]) $(id).addEventListener("click", () => { post({ t: id }); view.focus(); });
+})();
+</script>
+</body>
+</html>
